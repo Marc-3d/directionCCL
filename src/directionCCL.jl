@@ -1,10 +1,11 @@
 module directionCCL
 
-# include("label_components.jl")
+# SECOND ADAPTATION; WITH MACROS BUT I HAD TO REMOVE A "LET" STATEMNT
+include("label_components.jl")
 
 greet() = print("Hello World!")
 
-# INITIAL ADAPTATION, WITHOUT MACROS
+#= INITIAL ADAPTATION, WITHOUT MACROS
 
 import Base: push!
 
@@ -130,6 +131,6 @@ end
         end
         out
     end
-#
+=#
 
 end # module directionCCL

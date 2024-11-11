@@ -15,33 +15,26 @@ import Unroll.@unroll
      - 2D   vector field ( U::Array{T,2} & V::Array{T,2} )
      - 3D   vector field ( U::Array{T,3} & V::Array{T,3} & W::Array{T,3} )
      - 2D+t vector field ( U::Array{T,3} & V::Array{T,3} )
-     - 3D+t vector fiedl ( U::Array{T,4} & V::Array{T,4} & W::Array{T,4} )
+     - 3D+t vector field ( U::Array{T,4} & V::Array{T,4} & W::Array{T,4} )
 
-   A) One way to accommodate all possible inputs would be to pass the compoents in 
-   a tuple, which can be described with the type ::NTuple{NC,AbstractArray{T,ND}}, 
+   A) One way to accommodate all possible inputs would be to wrap the vector components
+   within a tuple, which can be described with the type ::NTuple{NC,AbstractArray{T,ND}}, 
    where NC stands for "number of components" of the vectorfield and ND refers
    the "number of dimensions" of the vector field. The inputs can be integral arrays,
    instead of the original VF components, allowing to compute multiscale dot products.
 
-   B) Another way would be to express it as a Matrix of size (LxNC), with one column 
-   for each component, and with L rows, one for each position in the vector field. 
-   This representation requires that we provide the original stride of the matrices, 
-   before flattening them into L rows. This approach has the advantage that dot 
-   products are easily expressed as VF[k,:] .* VF[k-offset_d,:]. However, this 
-   approach is not compatible with integral arrays.  
-
-   C) Another way is to combine the arrays into a ND+1 array, where the first (or last)
+   B) Another way is to combine the arrays into a ND+1 array, where the first (or last)
    dimension contains the vector field components. For instance, a 3D array of size
-   (2,h,w) can store a 2D vector field given by U and V. Dot products can be expressed
-   as VF[:,coords1...] .* VF[:,coords2...], with Cartesian coordinates, not linear
-   indices. This approach supports using integral arrays.
+   (2,h,w) can store the two components (U and V) of a 2D vector field. Dot products can
+   be expressed as VF[:,coords1...] .* VF[:,coords2...], with Cartesian coordinates, not
+   linear indices. This approach supports using integral arrays.
 
-   I guess we have to check which approach is faster. 
+   Below, I tested which approach is faster, with A) being much faster with loop unrolling.. 
 """
-function label_components( VF, 
-                           dot_th=0.5,
+function label_components( VF::NTuple{NC,AbstractArray{T,ND}}, 
+                           dot_th::T=T(0.5),
                            connectivity = 1:ndims(VF[1])
-                         )
+                         ) where {NC,ND,T}
    return label_components!( zeros(Int, size(VF[1])), 
                              VF, 
                              dot_th, 
@@ -49,8 +42,8 @@ function label_components( VF,
 end
 
 global label_components!
-let _label_components_cache = Dict{Tuple{Int, Vector{Int}}, Function}()
-
+# let _label_components_cache = Dict{Tuple{Int, Vector{Int}}, Function}()
+_label_components_cache = Dict{Tuple{Int, Vector{Int}}, Function}()
 
 #### 4-connectivity in 2d, 6-connectivity in 3d, etc.
 function label_components!( Albl::AbstractArray{Int},
@@ -82,7 +75,7 @@ function label_components!( Albl::AbstractArray{Int},
     if !haskey(_label_components_cache, key)
         # Need to generate the function
         N   = length(uregion)
-        ND_ = ndims(A)
+        ND_ = ndims(VF[1])
         iregion = [Symbol("i_", d) for d in uregion]
 
         f! = eval(quote
@@ -96,7 +89,8 @@ function label_components!( Albl::AbstractArray{Int},
                 offsets = strides(VF[1])
                 @nexprs $ND d->(offsets_d = offsets[d])
                 k = 0
-                @nloops $ND i VF[1] begin
+                U = VF[1]
+                @nloops $ND i U  begin
                     k += 1
                     label = typemax(Int)
                     if sum_( VF, k ) != T(0.0)
@@ -128,12 +122,12 @@ function label_components!( Albl::AbstractArray{Int},
     end
 
     sets = DisjointMinSets()
-    eval(:($f!($Albl, $sets, ($U,$V), $dot_th)))
+    eval(:($f!($Albl, $sets, $VF, $dot_th)))
 
     # Now parse sets to find the labels
     newlabel = minlabel(sets)
-    for i = 1:length(U)
-        if (U[i]+V[i]) != 0.0
+    for i = 1:length(VF[1])
+        if sum_( VF, i ) != 0.0
             Albl[i] = newlabel[find_root!(sets, Albl[i])]
         end
     end
@@ -141,7 +135,7 @@ function label_components!( Albl::AbstractArray{Int},
 end
 
 
-end # let
+# end # let
 
 # Copied directly from DataStructures.jl, but specialized
 # to always make the parent be the smallest label
