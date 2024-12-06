@@ -4,4 +4,5 @@ authors = ["marc "]
 version = "0.1.0"
 
 [deps]
+MarcIntegralArrays = "22adcb8d-38e9-4bca-bde9-f028a915c79c"
 Unroll = "36e64239-2ab9-4580-84fb-56737a503d36"

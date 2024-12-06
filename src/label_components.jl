@@ -2,9 +2,9 @@
    Copied verbatim from https://github.com/JuliaImages/Images.jl/blob/master/src/connected.jl
 =#
 
-import Base.push!  # for DisjointMinSets
-using Base.Cartesian
-import Unroll.@unroll
+# TODO: add MarcIntegralArrays as a dependecy
+include("R:/users/pereyram/Gits/MarcIntegralArrays/src/MarcIntegralArrays.jl"); 
+
 
 """
    Code taken from ImageComponentAnalysis.jl, 'label_components.jl'. I wanted to 
@@ -29,7 +29,7 @@ import Unroll.@unroll
    be expressed as VF[:,coords1...] .* VF[:,coords2...], with Cartesian coordinates, not
    linear indices. This approach supports using integral arrays.
 
-   Below, I tested which approach is faster, with A) being much faster with loop unrolling.. 
+   Below, I tested which approach is faster, with A) being much faster with loop unrolling. 
 """
 function label_components( VF::NTuple{NC,AbstractArray{T,ND}}, 
                            dot_th::T=T(0.5),
@@ -95,7 +95,7 @@ function label_components!( Albl::AbstractArray{Int},
                     label = typemax(Int)
                     if sum_( VF, k ) != T(0.0)
                         @nexprs $ND d->begin
-                            if $iregion[d] > 1  # is this neighbor in-bounds?
+                            if $iregion[d] > 1 && Albl[k-offsets_d] > 0 # is this neighbor in-bounds?
                                 dot = dot_( VF, k, k-offsets_d )
                                 if dot > dot_th  # if the two have similar angles...
                                     newlabel = Albl[k-offsets_d]
@@ -137,80 +137,117 @@ end
 
 # end # let
 
-# Copied directly from DataStructures.jl, but specialized
-# to always make the parent be the smallest label
-struct DisjointMinSets
-    parents::Vector{Int}
 
-    DisjointMinSets(n::Integer) = new([1:n;])
-end
-DisjointMinSets() = DisjointMinSets(0)
 
-function find_root!(sets::DisjointMinSets, m::Integer)
-    p = sets.parents[m]   # don't use @inbounds here, it might not be safe
-    @inbounds if sets.parents[p] != p
-        sets.parents[m] = p = find_root_unsafe!(sets, p)
-    end
-    p
-end
+###############################
 
-# an unsafe variant of the above
-function find_root_unsafe!(sets::DisjointMinSets, m::Int)
-    @inbounds p = sets.parents[m]
-    @inbounds if sets.parents[p] != p
-        sets.parents[m] = p = find_root_unsafe!(sets, p)
-    end
-    p
-end
 
-function union!(sets::DisjointMinSets, m::Integer, n::Integer)
-    mp = find_root!(sets, m)
-    np = find_root!(sets, n)
-    if mp < np
-        sets.parents[np] = mp
-        return mp
-    elseif np < mp
-        sets.parents[mp] = np
-        return np
-    end
-    mp
-end
+#### MULTISCALE IMPLEMENTATION WITH INTEGRAL ARRAYS
+# NOTE: I don't think I can use the @macro notation
+# that i copy-pasted from ImageComponentAnalysis.jl,
+# since I need to use cartesian coordinates for the
+# integral sums.
+function label_components!( Albl::AbstractArray{Int},
+                            VF::NTuple{NC,MarcIntegralArrays.IntegralArray{T,ND}},
+                            dot_th::T = T(0),
+                            region::Union{Dims, AbstractVector{Int}}=1:ndims(VF[1]) 
+                          ) where {NC,ND,T<:AbstractFloat}
+    N = length(VF[1]); 
 
-function push!(sets::DisjointMinSets)
-    m = length(sets.parents) + 1
-    push!(sets.parents, m)
-    m
-end
-
-function minlabel(sets::DisjointMinSets)
-    out = Vector{Int}(undef, length(sets.parents))
-    k = 0
-    for i = 1:length(sets.parents)
-        if sets.parents[i] == i
-            k += 1
+    uregion = unique(region)
+    if isempty(uregion)
+        k = 0
+        for i in CartesianIndices( Albl )
+            if sum_( VF, i ) != T(0.0)
+                k += 1
+                Albl[i] = k
+            end
         end
-        out[i] = k
+        return Albl
     end
-    out
-end
 
-#### testing dot products 
+    # We're going to compile a version specifically for the chosen region. 
+    # This should make it very fast.
+
+    key = (ndims(VF[1]), uregion)
+
+    if !haskey(_label_components_cache, key)
+        # Need to generate the function
+        N   = length(uregion)
+        ND_ = ndims(VF[1])
+        iregion = [Symbol("i_", d) for d in uregion]
+
+        f! = eval(quote
+            local lc!
+            function lc!( Albl::AbstractArray{Int}, 
+                          sets, 
+                          VF::NTuple{NC,MarcIntegralArrays.IntegralArray{T,ND}},
+                          dot_th::T = T(0)
+                        ) where {NC,ND,T<:AbstractFloat}
+
+                offsets = strides(VF[1])
+                @nexprs $ND d->(offsets_d = offsets[d])
+                k = 0
+                U = VF[1]
+                @nloops $ND i U  begin
+                    k += 1
+                    label = typemax(Int)
+                    if sum_( VF, k ) != T(0.0)
+                        @nexprs $ND d->begin
+                            if $iregion[d] > 1 && Albl[k-offsets_d] > 0 # is this neighbor in-bounds?
+                                dot = dot_( VF, k, k-offsets_d )
+                                if dot > dot_th  # if the two have similar angles...
+                                    newlabel = Albl[k-offsets_d]
+                                    if label != typemax(Int) && label != newlabel
+                                        label = union!(sets, label, newlabel)  # ...merge labels...
+                                    else
+                                        label = newlabel  # ...and assign the smaller to current pixel
+                                    end
+                                end
+                            end
+                        end
+                        if label == typemax(Int)
+                            label = push!(sets)   # there were no neighbors, create a new label
+                        end
+                        Albl[k] = label
+                    end
+                end
+                Albl
+            end
+        end)
+        _label_components_cache[key] = f!
+    else
+        f! = _label_components_cache[key]
+    end
+
+    sets = DisjointMinSets()
+    eval(:($f!($Albl, $sets, $VF, $dot_th)))
+
+    # Now parse sets to find the labels
+    newlabel = minlabel(sets)
+    for i = 1:length(VF[1])
+        if sum_( VF, i ) != 0.0
+            Albl[i] = newlabel[find_root!(sets, Albl[i])]
+        end
+    end
+    Albl
+end
 
 # A) WINNER
 # @btime directionCCL.dot_( $inp, $idx1, $idx2 ) (on my miniPC... seems unbeatable)
 #   4.308 ns (0 allocations: 0 bytes)
-function dot_( inp::NTuple{2,AbstractArray{T,ND}}, idx1=1, idx2=100 ) where {ND,T}
+function dot_( inp::NTuple{2,MarcIntegralArrays.IntegralArray{T,ND}}, ROI1=1, ROI2=100 ) where {ND,T}
     dot = T(0)
     @unroll for i in 1:2
-       dot += inp[i][idx1]*inp[i][idx2]
+       dot += inp[i][ROI1]*inp[i][ROI2]
     end
     return dot
 end
 
-function dot_( inp::NTuple{3,AbstractArray{T,ND}}, idx1=1, idx2=100 ) where {ND,T}
+function dot_( inp::NTuple{3,MarcIntegralArrays.IntegralArray{T,ND}}, ROI1=1, ROI2=100 ) where {ND,T}
     dot = T(0)
     @unroll for i in 1:3
-       dot += inp[i][idx1]*inp[i][idx2]
+       dot += inp[i][ROI1]*inp[i][ROI2]
     end
     return dot
 end
@@ -218,7 +255,7 @@ end
 # Very similar code we can also be used to compute "the sum of vector components", 
 # which allows us to discard vectors with mangitude == 0 (since all components must
 # be 0). 
-function sum_( inp::NTuple{2,AbstractArray{T,ND}}, idx1=1 ) where {ND,T}
+function sum_( inp::NTuple{2,MarcIntegralArrays.IntegralArray{T,ND}}, idx1=1 ) where {ND,T}
     sum = T(0)
     @unroll for i in 1:2
        sum += inp[i][idx1]
@@ -226,20 +263,10 @@ function sum_( inp::NTuple{2,AbstractArray{T,ND}}, idx1=1 ) where {ND,T}
     return sum
 end
 
-function sum_( inp::NTuple{3,AbstractArray{T,ND}}, idx1=1 ) where {ND,T}
+function sum_( inp::NTuple{3,MarcIntegralArrays.IntegralArray{T,ND}}, idx1=1 ) where {ND,T}
     sum = T(0)
     @unroll for i in 1:3
        sum += inp[i][idx1]
     end
     return sum
 end
-
-
-# B)
-# @btime directionCCL.dot_( $VF, $idx1, $idx2 )
-#   97.821 ns (3 allocations: 192 bytes)
-function dot_( inp::AbstractArray{T,NCD}, idx1::Dims{ND}, idx2::Dims{ND} ) where {T,NCD,ND}
-    return sum( inp[:,idx1...] .* inp[:,idx2...] )
-end
-
-
