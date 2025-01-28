@@ -241,25 +241,25 @@ end
    the magnitudes (M) as separate inputs.
 =#
 
-function _label_components_kalman( VF::NTuple{NC,AbstractArray{T,ND}},
-                                   M::AbstractArray{T,ND};
-                                   dot_th::T = T(0.0),
-                                   region::Union{Dims, AbstractVector{Int}} = 1:ndims(VF[1]), 
-                                   mag_th::T = T(0.0)
-                                 ) where {NC,ND,T<:AbstractFloat}
+function _label_components_kalman_t( VF::NTuple{NC,AbstractArray{T,ND}},
+                                     M::AbstractArray{T,ND};
+                                     dot_th::T = T(0.0),
+                                     region::Union{Dims, AbstractVector{Int}} = 1:ndims(VF[1]), 
+                                     mag_th::T = T(0.0)
+                                   ) where {NC,ND,T<:AbstractFloat}
 
     VFsize = size( VF[1] )
     Albl   = zeros( Int, VFsize )
-    _label_components_kalman!( Albl, VF, M, dot_th, mag_th )
+    _label_components_kalman_t!( Albl, VF, M, dot_th, mag_th )
     return Albl
 end
 
-function _label_components_kalman!( Albl::AbstractArray{Int,3},
-                                    VF::NTuple{NC,AbstractArray{T,3}},
-                                    M::AbstractArray{T,3},
-                                    dot_th::T = T(0.0),
-                                    mag_th::T = T(0.0)
-                                  ) where {NC,T<:AbstractFloat}
+function _label_components_kalman_t!( Albl::AbstractArray{Int,3},
+                                      VF::NTuple{NC,AbstractArray{T,3}},
+                                      M::AbstractArray{T,3},
+                                      dot_th::T = T(0.0),
+                                      mag_th::T = T(0.0)
+                                    ) where {NC,T<:AbstractFloat}
 
     VFsize = size( VF[1] )
     @assert size( Albl ) == VFsize
